@@ -90,6 +90,7 @@ async function load() {
   const res = await fetch(`/api/data?days=${state.days}`, { cache: 'no-store' });
   if (!res.ok) throw new Error(`API ${res.status}`);
   state.data = await res.json();
+  applyOfficial(state.data.official);
   render();
 }
 
@@ -99,6 +100,26 @@ async function refresh() {
   } catch (err) {
     $('meta').innerHTML = `<span style="color:#ff6b6b">加载失败：${esc(err.message)}</span>`;
   }
+}
+
+// 「查看官方用量」入口。额度与余额只有官方控制台有，这里只统计本地日志看得见的用量。
+// 具体跳哪个域名由后端从日志里认出来 —— 个人版 / 国际版 / 企业版是三套不同域名，
+// 写死一个会让别的用户点开 404。
+function applyOfficial(official) {
+  const a = $('officialUsage');
+  if (!a) return;
+  const url = (official && official.consoleUrl) || '';
+  if (!url) {
+    a.hidden = true;
+    return;
+  }
+  a.href = url;
+  a.hidden = false;
+  const where =
+    official.edition === 'enterprise' ? '企业版控制台'
+    : official.edition === 'personal' ? '官方控制台'
+    : '官方站点';
+  a.title = `额度与余额以${where}为准；这里只统计本地日志里的用量`;
 }
 
 // ---------- 渲染 ----------

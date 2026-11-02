@@ -59,6 +59,16 @@ select, button, input[type=file] {
 button { cursor: pointer; }
 button:hover { border-color: var(--accent); color: var(--accent); }
 button.ghost { background: transparent; color: var(--muted); }
+a.linkbtn {
+  background: var(--panel-2);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 13px;
+  text-decoration: none;
+}
+a.linkbtn:hover { border-color: var(--accent); color: var(--accent); }
 .chk { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 5px; }
 input[type=file] { padding: 5px; }
 

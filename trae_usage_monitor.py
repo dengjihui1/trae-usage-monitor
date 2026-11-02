@@ -496,6 +496,92 @@ def build_turns(events: list[RawEvent]) -> dict:
     return {"turns": turns, "unmatchedReports": unmatched, "sessions": list(sessions.values())}
 
 
+# ---------- 官方控制台入口识别 ----------
+# 本工具只统计本地日志里看得见的用量（轮次 / 耗时 / 状态 / 模型路由），额度与余额只有官方有。
+# 但官方入口随版本完全不同：国内个人版、国际版、企业版是三个不同域名，
+# 写死任何一个都会让别的用户点开 404。所以这里从日志里把「这台机器上的客户端
+# 实际在用的那个控制台域名」认出来，而不是硬编码。
+
+_CONSOLE_HOST_RE = re.compile(r'"consoleHost"\s*:\s*"(https?://[^"]+)"')
+_CONSOLE_URL_RE = re.compile(r"https://console[\w.\-]*trae[\w.\-]*")
+_OFFICIAL_SITE = {"cn": "https://www.trae.cn", "intl": "https://www.trae.ai"}
+
+_CONSOLE_CACHE: dict[str, dict] = {}
+_CONSOLE_LOCK = threading.Lock()
+
+
+def _safe_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _read_head(path: Path, limit: int = 3 * 1024 * 1024) -> str:
+    """只读开头一段。控制台地址这类配置行出现在日志靠前的位置，读全量没必要。"""
+    try:
+        with path.open("rb") as f:
+            return f.read(limit).decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+def detect_console(log_root: Path) -> dict:
+    """认出用户用的是哪个官方控制台，供「查看官方用量」入口跳转。
+
+    认不出来就退回区域对应的官网首页 —— 宁可不直达，也不给一个会失效的深链。
+    """
+    key = str(log_root)
+    with _CONSOLE_LOCK:
+        hit = _CONSOLE_CACHE.get(key)
+    if hit is not None:
+        return hit
+
+    try:
+        files = sorted(LogParser(log_root).discover_files(), key=_safe_mtime, reverse=True)
+    except Exception:  # noqa: BLE001
+        files = []
+
+    host = ""
+    for path in files[:3]:
+        text = _read_head(path)
+        if not text:
+            continue
+        hosts = _CONSOLE_HOST_RE.findall(text)
+        if hosts:
+            # 同一份配置会被重复打印，取出现最多的那个更稳
+            host = max(set(hosts), key=hosts.count).rstrip("/")
+            break
+        found = _CONSOLE_URL_RE.findall(text)
+        if found:
+            host = max(set(found), key=found.count).rstrip("/")
+            break
+
+    if host:
+        out = {
+            "consoleUrl": host,
+            "edition": "enterprise" if "enterprise" in host else "personal",
+            "region": "intl" if host.endswith("trae.ai") else "cn",
+            "source": "log",
+        }
+    else:
+        # 认不出来：按日志里出现的 CDN / API 域名猜区域，再退回对应官网首页
+        blob = "".join(_read_head(p, 512 * 1024) for p in files[:3])
+        intl = blob.count("trae.ai")
+        cn = blob.count("trae.com.cn") + blob.count("trae.cn")
+        region = "intl" if intl > cn else "cn"
+        out = {
+            "consoleUrl": _OFFICIAL_SITE[region],
+            "edition": "unknown",
+            "region": region,
+            "source": "guess",
+        }
+
+    with _CONSOLE_LOCK:
+        _CONSOLE_CACHE[key] = out
+    return out
+
+
 def snapshot_payload(log_root: Path, parser: LogParser | None = None) -> dict:
     parser = parser or LogParser(log_root)
     events, files = parser.load_all()
@@ -514,6 +600,7 @@ def snapshot_payload(log_root: Path, parser: LogParser | None = None) -> dict:
         "logRoot": str(log_root),
         "logRootExists": log_root.is_dir(),
         "files": files_meta,
+        "official": detect_console(log_root),
         "counts": {
             "events": len(events),
             "turns": len(parsed["turns"]),
@@ -996,6 +1083,10 @@ def print_doctor(log_root: Path) -> int:
         print("系统托盘: 不可用（可选，需要 pystray pillow；不装也能用页面内实时面板）")
 
     print(f"提醒设置: {settings_path()}")
+
+    off = detect_console(log_root)
+    origin = "日志识别" if off["source"] == "log" else "未识别，退回官网首页"
+    print(f"官方用量入口: {off['consoleUrl']}（{off['edition']} / {off['region']}，{origin}）")
 
     download_dir = default_downloads_dir()
     print(f"\n下载目录: {download_dir}")

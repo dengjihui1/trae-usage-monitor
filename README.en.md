@@ -53,6 +53,12 @@ A **second-by-second** panel pinned to the top of the page: today's turn count, 
 
 Alerts are **state-based**, not event-based: while the condition holds, the alert stays; when it clears, the alert disappears. Reloading or reopening the page never stacks duplicates.
 
+### See official usage (one-click jump)
+
+A "查看官方用量" (See official usage) entry sits in the top-right corner and opens **the official console this machine actually uses**. The domain is detected from the local logs, so CN personal, international and enterprise editions each land in the right place — no dead link that 404s for someone else. If detection fails it falls back to the official site for the detected region.
+
+> **Why isn't quota shown here?** The local logs contain **no quota balance and no token values** — it simply is not there. Quota, balance and usage-based billing belong to the official console; this tool only reports what the local logs can see (turns / latency / failure rate / model routing).
+
 ### Auto decision trace (the core)
 
 Per session, every turn's model is laid out as a timeline. **A colour change means Auto switched models**, and the switch point is labelled.
@@ -266,6 +272,7 @@ Trae 用量监控 · 自检
 静态资源: C:\...\_MEIPASS\web  OK
 系统托盘: 可用（pystray + Pillow 已安装）
 提醒设置: C:\Users\you\.trae-usage-monitor\settings.json
+官方用量入口: https://console.enterprise.trae.cn（enterprise / cn，日志识别）
 下载目录: C:\Users\you\Downloads
   疑似用量明细 CSV: 0 个
 
