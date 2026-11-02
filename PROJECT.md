@@ -41,7 +41,7 @@ D:\Trae\trae-usage-monitor\
 ├── start.command                6 行 /   265 B   macOS 双击启动（LF，可执行位 100755）
 ├── README.md                  506 行 / 24458 B   中文说明
 ├── README.en.md               506 行 / 25206 B   英文说明
-├── PROJECT.md                 316 行 / 18887 B   本文件：项目全景，供 AI / 新同事快速接手
+├── PROJECT.md                 335 行 / 20052 B   本文件：项目全景，供 AI / 新同事快速接手
 ├── .gitattributes              11 行 /   306 B   固定换行符（*.sh/*.command=LF，*.bat=CRLF，二进制不转）
 ├── .gitignore                  12 行 /   146 B   排除 __pycache__/ build/ dist/ *.spec *.log data.json
 └── LICENSE                     21 行 /  1088 B   MIT
@@ -256,10 +256,27 @@ macOS 的 AppKit / Linux 的 GTK 硬性要求事件循环在**主线程**，所�
 | v1.1.0 | 秒级实时用量面板 + 5 条可调阈值用量提醒 + 可选系统托盘；exe 体积 26.9MB → 16.2MB |
 | v1.1.1 | 补齐 macOS / Linux 支持（托盘线程模型 + `build.sh` / `start.command`） |
 | v1.1.2 | **Windows 落地优化**：`--noconsole` 静默无窗口 + 自带图标；修掉端口被抢、补控制台中文乱码、启动失败无提示三个缺陷 |
-| **v1.2.0** | **「查看官方用量」一键跳转**：从日志识别个人版 / 企业版 / 国际版控制台域名（三级回退），不再写死；`--doctor` 同步输出识别结果 |
+| **v1.2.0** | **「查看官方用量」一键跳转**：从日志识别个人版 / 企业版 / 国际版控制台域名（三级回退），不再写死；`--doctor` 同步输出识别结果；新增 `PROJECT.md` |
 
-- 各版本 exe 大小：v1.1.1 = 16,189,327 B；v1.1.2 = 16,181,327 B；v1.2.0 = 16,184,068 B
-- git 提交：`a088740`(v1.0.0) → `a7862f2` → `6e661d0`(v1.1) → `32e6497`(v1.1.1) → `99eb524`(v1.1.2) → v1.2.0 见最新 HEAD
+- 各版本 exe 大小：v1.1.1 = 16,189,327 B；v1.1.2 = 16,181,327 B；**v1.2.0 = 16,184,068 B**
+- git 提交：`a088740`(v1.0.0) → `a7862f2` → `6e661d0`(v1.1) → `32e6497`(v1.1.1) → `99eb524`(v1.1.2) → **`50e9984`(v1.2.0，当前 HEAD)**
+
+### 发布产物（GitHub Releases）
+
+| 版本 | Release 页面 | exe 直链 |
+| --- | --- | --- |
+| v1.2.0 | [releases/tag/v1.2.0](https://github.com/dengjihui1/trae-usage-monitor/releases/tag/v1.2.0) | [trae-usage-monitor.exe](https://github.com/dengjihui1/trae-usage-monitor/releases/download/v1.2.0/trae-usage-monitor.exe) |
+| 永远指向最新 | [releases/latest](https://github.com/dengjihui1/trae-usage-monitor/releases/latest) | [latest/download/trae-usage-monitor.exe](https://github.com/dengjihui1/trae-usage-monitor/releases/latest/download/trae-usage-monitor.exe) |
+
+v1.2.0 的 exe 校验和（下载后可核对）：
+
+```
+sha256  5d541c4aed82c4c4afc04aa06042291874acca52301d5c86daf60d7b48de4785
+size    16184068 bytes
+```
+
+> 每个版本都打了**附注标签**（`git tag -a v1.x.y`），标签对象与提交分开，
+> 所以 `git ls-remote --tags` 看到的 `v1.1.2` 提交号与 `v1.1.2^{}` 不是同一个，属正常。
 
 ---
 
@@ -275,6 +292,8 @@ macOS 的 AppKit / Linux 的 GTK 硬性要求事件循环在**主线程**，所�
 - `--no-tray`：自动补控制台，服务正常
 - **v1.2.0 官方入口识别**：本机识别为 `https://console.enterprise.trae.cn（enterprise / cn，日志识别）`；
   `/api/data` 返回 `official` 字段正确；回退路径（空日志目录）输出 `https://www.trae.cn（unknown / cn，未识别，退回官网首页）`
+- **v1.2.0 发布产物**：已发布 Release 并上传 `trae-usage-monitor.exe`（16,184,068 B），
+  匿名访问 Release API 复核 `draft=false`、附件体积与本地一致
 
 ### 未验证（诚实边界）
 
