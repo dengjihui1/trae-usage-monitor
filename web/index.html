@@ -27,6 +27,58 @@
 <main>
   <section class="meta" id="meta"></section>
 
+  <section class="live" id="live">
+    <div class="live-head">
+      <span class="pulse" id="livePulse"></span>
+      <h2>实时用量</h2>
+      <span class="live-clock mono" id="liveClock">--:--:--</span>
+      <span class="spacer"></span>
+      <span class="hint" id="liveHint">每 2 秒刷新</span>
+      <button id="notifyBtn" class="ghost">开启浏览器通知</button>
+      <button id="settingsBtn" class="ghost">提醒设置</button>
+    </div>
+    <div class="live-grid">
+      <div class="live-stat">
+        <div class="label">今日轮次</div>
+        <div class="value" id="lvTodayTurns">—</div>
+        <div class="hint" id="lvTodaySub">—</div>
+      </div>
+      <div class="live-stat">
+        <div class="label">当前会话</div>
+        <div class="value sm" id="lvSession">—</div>
+        <div class="hint" id="lvSessionSub">—</div>
+      </div>
+      <div class="live-stat">
+        <div class="label">最近一轮</div>
+        <div class="value sm" id="lvLastModel">—</div>
+        <div class="hint" id="lvLastSub">—</div>
+      </div>
+      <div class="live-stat">
+        <div class="label">今日成功</div>
+        <div class="value" id="lvTodayRate">—</div>
+        <div class="hint" id="lvTodayRateSub">—</div>
+      </div>
+    </div>
+    <div class="live-flow-wrap">
+      <div class="live-flow" id="lvFlow"></div>
+      <div class="hint">最近 24 轮，左侧最新；颜色 = 模型，圆点 = 响应状态</div>
+    </div>
+    <div class="alerts" id="alerts"></div>
+  </section>
+
+  <section class="card settings" id="settingsCard" hidden>
+    <div class="card-head">
+      <h2>用量提醒设置</h2>
+      <span class="hint">全部基于本地日志的用量口径（轮次 / 耗时 / 响应状态）；本地拿不到云端额度余额与 token 数值，所以叫「用量提醒」而不是「额度提醒」</span>
+      <span class="spacer"></span>
+      <button id="settingsSave">保存</button>
+      <button id="settingsReset" class="ghost">恢复默认</button>
+      <button id="settingsClose" class="ghost">收起</button>
+    </div>
+    <div class="settings-grid" id="settingsGrid"></div>
+    <div class="hint" id="settingsInfo"></div>
+  </section>
+
   <section class="kpis" id="kpis"></section>
 
   <section class="card trace-card">

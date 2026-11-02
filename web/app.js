@@ -118,6 +118,7 @@ function render() {
   renderSessions(d);
   renderTurns(d);
   renderCsv();
+  if (LIVE.data) renderLive(LIVE.data);
 }
 
 function renderMeta(d) {
@@ -604,9 +605,253 @@ async function autoFindCsv() {
   }
 }
 
+// ---------- 实时面板 + 用量提醒 ----------
+
+const LIVE = {
+  data: null,
+  stamp: null,
+  settings: null,
+  notifiedSig: '',
+  timer: null,
+  clockTimer: null,
+};
+
+function setText(id, v) {
+  const el = $(id);
+  if (el) el.textContent = v;
+}
+
+function liveClock() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  setText('liveClock', `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`);
+}
+
+async function fetchLive() {
+  try {
+    const res = await fetch('/api/live', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`API ${res.status}`);
+    const d = await res.json();
+    const changed = d.stamp !== LIVE.stamp;
+    LIVE.data = d;
+    LIVE.stamp = d.stamp;
+    if (changed) renderLive(d);
+    renderAlerts(d.alerts || []);
+    applyNotify(d);
+    setText('liveHint', `每 ${d.settings ? d.settings.pollSeconds : 2} 秒刷新`);
+  } catch (err) {
+    setText('liveHint', `实时接口异常：${err.message}`);
+  }
+}
+
+function renderLive(d) {
+  const t = d.today || {};
+  setText('lvTodayTurns', t.turns ?? 0);
+  setText('lvTodaySub', `Auto ${t.autoTurns ?? 0} 轮 · 历史共 ${d.total ?? 0} 轮`);
+
+  const cur = d.current || {};
+  if (cur.sessionId) {
+    setText('lvSession', sessionLabel(cur.sessionId));
+    setText('lvSessionSub', `${sessionShort(cur.sessionId)} · 今日 ${cur.turns} 轮`);
+  } else {
+    setText('lvSession', '空闲');
+    setText('lvSessionSub', '最近 10 分钟内没有新对话');
+  }
+
+  const last = d.last;
+  if (last) {
+    setText('lvLastModel', last.model || '—');
+    setText('lvLastSub', `${last.mode || '未知'} · ${last.status || '未知'} · ${fmtDur(last.costTime)} · ${fmtTime(last.time)}`);
+  } else {
+    setText('lvLastModel', '—');
+    setText('lvLastSub', '还没有归因到轮次');
+  }
+
+  if (t.successRate === null || t.successRate === undefined) {
+    setText('lvTodayRate', '—');
+    setText('lvTodayRateSub', '今日暂无已回执响应');
+  } else {
+    setText('lvTodayRate', `${Math.round(t.successRate)}%`);
+    setText('lvTodayRateSub', `${t.success}/${t.known} 轮 · 平均 ${fmtDur(t.avgCostTime)}`);
+  }
+
+  setText('liveHint', `每 ${d.settings ? d.settings.pollSeconds : 2} 秒刷新 · ${d.logRootExists ? '日志正常' : '日志目录不存在'}`);
+  renderFlow(d.recent || []);
+}
+
+function renderFlow(recent) {
+  const host = $('lvFlow');
+  if (!recent.length) {
+    host.innerHTML = '<span class="empty">暂无轮次</span>';
+    return;
+  }
+  host.innerHTML = [...recent]
+    .reverse()
+    .map((t, i) => {
+      const color = modelColor(t.model, colorIndex);
+      const tip = `${fmtTime(t.time)} · ${t.model} · ${t.mode} · ${t.status} · ${fmtDur(t.costTime)}`;
+      return `<span class="lchip${i === 0 ? ' fresh' : ''}" style="--c:${color}" title="${esc(tip)}"><i class="st ${statusClass(t.status)}"></i>${esc(t.model || '—')}</span>`;
+    })
+    .join('');
+}
+
+const ALERT_MARK = { warn: '!', bad: '×', info: 'i' };
+
+function renderAlerts(alerts) {
+  const host = $('alerts');
+  if (!alerts.length) {
+    host.innerHTML = '';
+    return;
+  }
+  host.innerHTML = alerts
+    .map(
+      (a) => `<div class="alert ${esc(a.level || 'warn')}">
+      <span class="ai">${ALERT_MARK[a.level] || '!'}</span>
+      <b>${esc(a.title || '提醒')}</b>
+      <span class="ad">${esc(a.detail || '')}</span>
+    </div>`
+    )
+    .join('');
+}
+
+function alertKey(a) {
+  return `${a.code}|${a.sessionId || ''}|${a.threshold ?? ''}`;
+}
+
+function applyNotify(d) {
+  const alerts = d.alerts || [];
+  if (!alerts.length) {
+    LIVE.notifiedSig = '';
+    return;
+  }
+  const sig = alerts.map(alertKey).join(',');
+  if (sig === LIVE.notifiedSig) return;
+  if (!(d.settings && d.settings.browserNotify)) return;
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  LIVE.notifiedSig = sig;
+  const a = alerts[0];
+  try {
+    new Notification(`Trae 用量提醒 · ${a.title}`, { body: a.detail, tag: 'trae-usage-alert' });
+  } catch {
+    /* 部分浏览器在非安全上下文下会抛异常，忽略 */
+  }
+}
+
+// ---------- 提醒设置 ----------
+
+const SETTINGS_FIELDS = [
+  { p: ['alerts', 'enabled'], t: 'bool', l: '提醒总开关', u: '页面与托盘共用' },
+  { p: ['alerts', 'todayTurns', 'enabled'], t: 'bool', l: '今日轮次超阈' },
+  { p: ['alerts', 'todayTurns', 'threshold'], t: 'int', l: '今日轮次阈值', u: '轮' },
+  { p: ['alerts', 'sessionTurns', 'enabled'], t: 'bool', l: '单会话轮次超阈' },
+  { p: ['alerts', 'sessionTurns', 'threshold'], t: 'int', l: '单会话轮次阈值', u: '轮' },
+  { p: ['alerts', 'errorRate', 'enabled'], t: 'bool', l: '失败率超阈' },
+  { p: ['alerts', 'errorRate', 'threshold'], t: 'int', l: '失败率阈值', u: '%' },
+  { p: ['alerts', 'errorRate', 'minSamples'], t: 'int', l: '失败率最小样本', u: '轮' },
+  { p: ['alerts', 'avgCost', 'enabled'], t: 'bool', l: '平均耗时超阈' },
+  { p: ['alerts', 'avgCost', 'threshold'], t: 'int', l: '平均耗时阈值', u: '毫秒' },
+  { p: ['alerts', 'avgCost', 'minSamples'], t: 'int', l: '耗时最小样本', u: '轮' },
+  { p: ['alerts', 'autoSwitch', 'enabled'], t: 'bool', l: 'Auto 命中指定模型' },
+  { p: ['alerts', 'autoSwitch', 'model'], t: 'text', l: '关注的模型名', u: '可留空' },
+  { p: ['pollSeconds'], t: 'float', l: '实时面板刷新间隔', u: '秒' },
+  { p: ['dashboardSeconds'], t: 'float', l: '看板刷新间隔', u: '秒' },
+  { p: ['notify', 'browser'], t: 'bool', l: '浏览器桌面通知' },
+  { p: ['notify', 'tray'], t: 'bool', l: '托盘气泡通知', u: '需托盘可用' },
+];
+
+function getPath(obj, path) {
+  return path.reduce((o, k) => (o == null ? o : o[k]), obj);
+}
+
+function renderSettings(s) {
+  $('settingsGrid').innerHTML = SETTINGS_FIELDS.map((f, i) => {
+    const v = getPath(s, f.p);
+    const id = `set${i}`;
+    const attr = `id="${id}" data-path='${JSON.stringify(f.p)}' data-kind="${f.t}"`;
+    let input;
+    if (f.t === 'bool') input = `<input type="checkbox" ${attr} ${v ? 'checked' : ''} />`;
+    else if (f.t === 'text') input = `<input type="text" ${attr} value="${esc(v ?? '')}" placeholder="例如 gpt-5" />`;
+    else input = `<input type="number" ${attr} value="${v ?? ''}" step="${f.t === 'float' ? 0.5 : 1}" min="0" />`;
+    return `<label class="setrow" for="${id}"><span class="sl">${esc(f.l)}${f.u ? ` <i>(${esc(f.u)})</i>` : ''}</span>${input}</label>`;
+  }).join('');
+}
+
+async function fetchSettings(defaults) {
+  const res = await fetch(`/api/settings${defaults ? '?defaults=1' : ''}`, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`API ${res.status}`);
+  return res.json();
+}
+
+async function postSettings(patch) {
+  const res = await fetch('/api/settings', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) return null;
+  const s = await res.json();
+  LIVE.settings = s;
+  setupTimers(s);
+  paintNotifyButton(s);
+  return s;
+}
+
+function collectSettingsForm() {
+  const patch = {};
+  $('settingsGrid')
+    .querySelectorAll('input[data-path]')
+    .forEach((el) => {
+      const path = JSON.parse(el.dataset.path);
+      let val;
+      if (el.dataset.kind === 'bool') val = el.checked;
+      else if (el.dataset.kind === 'text') val = el.value.trim();
+      else {
+        val = Number(el.value);
+        if (!isFinite(val) || val < 0) return;
+      }
+      let o = patch;
+      for (let i = 0; i < path.length - 1; i++) o = o[path[i]] ?? (o[path[i]] = {});
+      o[path[path.length - 1]] = val;
+    });
+  return patch;
+}
+
+// ---------- 浏览器通知授权 ----------
+
+function paintNotifyButton(s) {
+  const btn = $('notifyBtn');
+  if (!('Notification' in window)) {
+    btn.disabled = true;
+    btn.textContent = '浏览器不支持通知';
+    return;
+  }
+  const granted = Notification.permission === 'granted';
+  btn.disabled = Notification.permission === 'denied';
+  btn.textContent = granted
+    ? s && s.notify && s.notify.browser
+      ? '桌面通知已开启'
+      : '开启桌面通知'
+    : Notification.permission === 'denied'
+      ? '通知已被拒绝'
+      : '开启浏览器通知';
+}
+
+async function requestNotify() {
+  if (!('Notification' in window)) return;
+  const perm = await Notification.requestPermission();
+  if (perm === 'granted') {
+    const s = await postSettings({ notify: { browser: true } });
+    if (s) renderSettings(s);
+  }
+  paintNotifyButton(LIVE.settings);
+}
+
 // ---------- 事件绑定 ----------
 
-$('refresh').addEventListener('click', refresh);
+$('refresh').addEventListener('click', () => {
+  refresh();
+  fetchLive();
+});
 $('days').addEventListener('change', (e) => {
   state.days = Number(e.target.value);
   refresh();
@@ -631,6 +876,43 @@ $('clearFilter').addEventListener('click', () => {
   renderTurns(state.data);
 });
 
+$('notifyBtn').addEventListener('click', requestNotify);
+
+$('settingsBtn').addEventListener('click', async () => {
+  const card = $('settingsCard');
+  card.hidden = !card.hidden;
+  if (!card.hidden) {
+    try {
+      const s = LIVE.settings || (await fetchSettings());
+      LIVE.settings = s;
+      renderSettings(s);
+      $('settingsInfo').textContent = '改动后点「保存」生效，页面与托盘共用同一份设置。';
+    } catch (err) {
+      $('settingsInfo').textContent = `读取设置失败：${err.message}`;
+    }
+  }
+});
+$('settingsClose').addEventListener('click', () => {
+  $('settingsCard').hidden = true;
+});
+$('settingsSave').addEventListener('click', async () => {
+  const s = await postSettings(collectSettingsForm());
+  $('settingsInfo').textContent = s ? '已保存，实时面板与提醒已按新配置运行。' : '保存失败，请稍后重试。';
+  if (s) renderSettings(s);
+  fetchLive();
+});
+$('settingsReset').addEventListener('click', async () => {
+  try {
+    const d = await fetchSettings(true);
+    const s = await postSettings(d);
+    if (s) renderSettings(s);
+    $('settingsInfo').textContent = '已恢复默认设置。';
+    fetchLive();
+  } catch (err) {
+    $('settingsInfo').textContent = `恢复默认失败：${err.message}`;
+  }
+});
+
 $('csvAuto').addEventListener('click', autoFindCsv);
 
 $('csvFile').addEventListener('change', (e) => {
@@ -653,6 +935,7 @@ $('csvFile').addEventListener('change', (e) => {
   };
   reader.readAsArrayBuffer(file);
 });
+
 $('clearCsv').addEventListener('click', () => {
   state.csv = null;
   state.csvSource = null;
@@ -661,12 +944,35 @@ $('clearCsv').addEventListener('click', () => {
   renderCsv();
 });
 
-function setupAutoRefresh() {
+// 实时接口轻、跑得勤；看板接口重、跑得疏。这样既秒级跳动又不会一直狂刷解析。
+function setupTimers(s) {
   if (state.timer) clearInterval(state.timer);
+  if (LIVE.timer) clearInterval(LIVE.timer);
   state.timer = null;
-  if ($('autoRefresh').checked) state.timer = setInterval(refresh, 5000);
+  LIVE.timer = null;
+  if (!$('autoRefresh').checked) return;
+  const poll = Math.max(1, Number(s && s.pollSeconds) || 2) * 1000;
+  const dash = Math.max(5, Number(s && s.dashboardSeconds) || 30) * 1000;
+  LIVE.timer = setInterval(fetchLive, poll);
+  state.timer = setInterval(refresh, dash);
 }
-$('autoRefresh').addEventListener('change', setupAutoRefresh);
+$('autoRefresh').addEventListener('change', () => setupTimers(LIVE.settings));
 
-setupAutoRefresh();
-refresh();
+async function boot() {
+  liveClock();
+  LIVE.clockTimer = setInterval(liveClock, 1000);
+  let s = null;
+  try {
+    s = await fetchSettings();
+  } catch {
+    s = null;
+  }
+  LIVE.settings = s;
+  if (s) renderSettings(s);
+  paintNotifyButton(s);
+  setupTimers(s);
+  fetchLive();
+  refresh();
+}
+
+boot();

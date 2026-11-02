@@ -32,6 +32,27 @@ This tool digs the answer out of the local logs: **which model each turn used, w
 
 ## Features
 
+### Live usage panel + usage alerts (new in v1.1)
+
+A **second-by-second** panel pinned to the top of the page: today's turn count, the currently active session, the model the latest turn landed on, today's success rate, and a 24-turn model stream (colour = model, dot = response status).
+
+![Live usage panel](docs/live.png)
+
+**Usage alerts** are a set of threshold rules you control. When a rule fires, an alert bar appears at the top of the page, and you can optionally get a desktop notification / tray balloon as well:
+
+| Rule | Default | Meaning |
+| --- | --- | --- |
+| Today's turns over threshold | 300 | Cumulative turns for the day exceed the threshold |
+| Single-session turns over threshold | 80 | One session exceeds the threshold today |
+| Failure rate over threshold | 20% (≥5 samples) | Too many turns with a definite receipt failed |
+| Average latency over threshold | off | Average response time is too high |
+| Auto landed on a watched model | off | Auto routed to a model you care about |
+
+> **Why "usage alerts" and not "quota alerts"?**
+> The local logs contain **no quota balance and no token values**, so a true quota alert is impossible. Inferring quota from turn counts would be seriously misleading — model prices differ by orders of magnitude, so 100 Auto turns and 100 manual turns on an expensive model are nowhere near the same cost. So the tool only alerts on **usage signals that are genuinely visible locally** (turns / latency / failure rate / model routing). Every number comes from real logs; nothing is guessed.
+
+Alerts are **state-based**, not event-based: while the condition holds, the alert stays; when it clears, the alert disappears. Reloading or reopening the page never stacks duplicates.
+
 ### Auto decision trace (the core)
 
 Per session, every turn's model is laid out as a timeline. **A colour change means Auto switched models**, and the switch point is labelled.
@@ -86,7 +107,7 @@ Three ways. Pick whichever fits.
 
 ### Option 2: run with Python (recommended)
 
-Python 3.10+ required, **no third-party packages needed**.
+Python 3.10+ required. **The core needs no third-party packages** (the system tray is an optional add-on, see below).
 
 ```bash
 git clone https://github.com/dengjihui1/trae-usage-monitor.git
@@ -111,11 +132,30 @@ This produces a single-file `trae-usage-monitor.exe` under `dist\`. For macOS / 
 ```bash
 python trae_usage_monitor.py --port 9000          # change port
 python trae_usage_monitor.py --no-open            # don't open the browser
+python trae_usage_monitor.py --no-tray            # don't start the system tray
 python trae_usage_monitor.py --json               # print the parsed result
 python trae_usage_monitor.py --out data.json      # export a snapshot
 python trae_usage_monitor.py --doctor             # self-check
 python trae_usage_monitor.py --log-root "D:\logs" # point at a log root manually
 ```
+
+### System tray (optional add-on)
+
+The core has **zero third-party dependencies**. The system tray is optional: if `pystray` + `Pillow` are installed it turns on automatically; if not, the tool silently degrades to "in-page live panel only" with no other impact.
+
+```bash
+pip install pystray pillow
+```
+
+Once enabled, an icon appears in your taskbar:
+
+- **Icon colour = current state**: green normal / yellow has alerts / red has failure-class alerts, with a red badge dot
+- **Hover**: `今日 N 轮 · 最近 <model> · M alerts`
+- **Left click / first menu item**: open the dashboard
+- **Menu "用量提醒"**: toggle alerts on/off (shared with the page)
+- **Menu "退出监控"**: shut down the whole server
+
+> The tray and the page are decoupled: the tray polls the local `127.0.0.1` `/api/live` endpoint, so it works whether or not the page is open.
 
 ---
 
@@ -210,7 +250,9 @@ Trae 用量监控 · 自检
   响应回执             605 / 605
 
 归因轮次: 612（未归属响应 0）
-静态资源: OK
+静态资源: C:\...\_MEIPASS\web  OK
+系统托盘: 可用（pystray + Pillow 已安装）
+提醒设置: C:\Users\you\.trae-usage-monitor\settings.json
 下载目录: C:\Users\you\Downloads
   疑似用量明细 CSV: 0 个
 
@@ -225,6 +267,7 @@ Trae 用量监控 · 自检
 | An event shows "seen but nothing parsed" | Trae changed the log format | Report the output to the author |
 | `归因轮次` (turns) is 0 | Nothing parsed at all | Same, and confirm Trae has actually been used |
 | `静态资源: 缺失` | Packaging missed `--add-data web` | Rebuild |
+| `系统托盘: 不可用` | Optional `pystray` / `Pillow` not installed | `pip install pystray pillow` if you want the tray; everything else works without it |
 
 Unrecognized lines are **always skipped silently** — a format change degrades the statistics, it never crashes the tool.
 
@@ -267,7 +310,8 @@ Tools that read local logs have to state this up front:
 - **Local only, no network** — it reads your local Trae logs and makes no network requests, no telemetry, no uploads.
 - **Binds to `127.0.0.1` only** — the dashboard HTTP server listens on the loopback address, so other devices on your LAN cannot reach it.
 - **No conversation content is extracted** — only the lines carrying the event markers above and the JSON metadata that follows (session id, model name, latency, status, error code, ...) are kept. Your chat content is never stored, displayed or exported.
-- **Zero third-party dependencies** — Python standard library only. No pip packages, no supply-chain surface.
+- **Zero third-party dependencies (core)** — parsing, attribution, the HTTP server and the front end use only the Python standard library and native web tech. No pip packages, no supply-chain surface. The system tray is the one optional add-on and only turns on if you install `pystray pillow` yourself.
+- **Readable, deletable settings** — alert thresholds live in `~/.trae-usage-monitor/settings.json` (on Windows: `C:\Users\<you>\.trae-usage-monitor\settings.json`) as plain JSON, ready to inspect or delete.
 - **Auditable** — the whole tool is `trae_usage_monitor.py` plus three front-end files. Read them.
 
 Precise boundary of the "auto-find usage CSV" feature:
@@ -341,6 +385,26 @@ No, because the data does not exist locally (see "Where session names come from"
 </details>
 
 <details>
+<summary><b>Why can't the alert warn me that my quota is almost used up?</b></summary>
+
+Because quota balance simply does not exist locally. The logs carry no balance, no token values and no pricing rules, and the console API needs credentials. So the tool sticks to **usage alerts built on locally visible signals** (today's turns, single-session turns, failure rate, average latency, whether Auto hit a watched model).
+
+A real quota alert would only be possible by talking to the official console API, which would require your credentials — breaking the "local only, no credentials" premise. Not doing that for now.
+
+</details>
+
+<details>
+<summary><b>An alert never fires / never goes away?</b></summary>
+
+- **Never fires**: open "提醒设置" and check that the master switch and the specific rule are both on, and that the threshold is not too high (the default "today's turns" is 300, which you will rarely hit day to day — lower it to test).
+- **Never goes away**: alerts are state-based, so while the condition holds they stay — "today's turns over threshold" only clears at midnight. To clear it immediately, raise the threshold.
+- **No desktop notification**: you need to authorise it once via "开启浏览器通知" on the page; `127.0.0.1` counts as a secure context, so it normally works. Tray balloons additionally require the tray to be enabled.
+
+Settings live in `~/.trae-usage-monitor/settings.json`; delete that file to return to defaults.
+
+</details>
+
+<details>
 <summary><b>Can it show how much money / credits I spent?</b></summary>
 
 Not directly. There are no token values and no pricing rules locally. You can import the console CSV to see the official usage numbers.
@@ -365,8 +429,9 @@ No. Logs are local, and the tool only reads the local machine.
 
 ## Cross-platform notes
 
-- **Windows**: fully supported; `start.bat` / `build.bat` work as-is.
+- **Windows**: fully supported; `start.bat` / `build.bat` work as-is, and the system tray is verified working.
 - **macOS / Linux**: core functionality works (log directories are detected per platform), but `build.bat` is a Windows batch file — run the PyInstaller command from "Packaging and distribution" manually.
+- **System tray**: verified on Windows. On macOS, `pystray` requires the main thread, but this tool's main thread is taken by the HTTP server, so the tray may fail to install — in that case it **silently degrades** to page-only mode with no other impact.
 - The macOS / Linux log paths follow the VS Code family convention and have **not been verified on real hardware**. If you get it running on a Mac (or fail to), please open an issue.
 
 ---
@@ -374,12 +439,12 @@ No. Logs are local, and the tool only reads the local machine.
 ## Project structure
 
 ```
-trae_usage_monitor.py   parser + attribution + HTTP server (single file, zero deps)
+trae_usage_monitor.py   parser + attribution + alert evaluation + HTTP server (single file, zero-dep core)
 web/index.html          dashboard markup
 web/app.css             styles
-web/app.js              aggregation, rendering, CSV import
+web/app.js              aggregation, rendering, live panel, alert settings, CSV import
 start.bat               one-click launch (Windows)
-build.bat               build a single-file exe (PyInstaller)
+build.bat               build a single-file exe (PyInstaller, includes the optional tray deps)
 docs/                   README screenshots
 README.md               Chinese readme
 README.en.md            this file
@@ -387,15 +452,23 @@ LICENSE                 MIT
 .gitignore              build artifacts
 ```
 
+At runtime a settings file is created in your home directory (safe to delete):
+
+```
+~/.trae-usage-monitor/settings.json    alert thresholds and refresh intervals
+```
+
 ---
 
 ## Known limitations
 
 - **No exact tokens** — the local logs have no token values; import the console CSV instead.
+- **No quota balance** — hence "usage alerts", not "quota alerts" (see above).
 - **No session titles** — titles are cloud-only; the default is the agent name and can be renamed manually.
 - **Depends on the log format** — it is a Trae internal implementation and may change; `--doctor` diagnoses it quickly.
 - **This machine only** — logs are local, so another device is invisible.
 - **Auto attribution only** — no quota lookup, no cost conversion.
+- **Tray is optional** — needs `pystray` + `Pillow`; may be unavailable on macOS, where it degrades automatically.
 
 ---
 

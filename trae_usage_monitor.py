@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import os
 import re
@@ -442,6 +443,260 @@ def snapshot_payload(log_root: Path, parser: LogParser | None = None) -> dict:
     }
 
 
+# ---------- 用户设置（提醒规则） ----------
+# 说明：本地日志拿不到云端「额度余额」和 token 数值，所以提醒一律基于「本地用量口径」：
+# 轮次、耗时、响应状态。用轮次去反推额度会严重误导（不同模型单价差几十倍），不做。
+
+DEFAULT_SETTINGS: dict = {
+    "alerts": {
+        "enabled": True,
+        "todayTurns": {"enabled": True, "threshold": 300},
+        "sessionTurns": {"enabled": True, "threshold": 80},
+        "errorRate": {"enabled": True, "threshold": 20, "minSamples": 5},
+        "avgCost": {"enabled": False, "threshold": 60000, "minSamples": 5},
+        "autoSwitch": {"enabled": False, "model": ""},
+    },
+    "pollSeconds": 2,
+    "dashboardSeconds": 30,
+    "notify": {"browser": False, "tray": True},
+}
+
+
+def settings_path() -> Path:
+    """放在用户主目录，而不是程序目录：打包成 exe 后程序目录是临时解包目录，写不住。"""
+    return Path.home() / ".trae-usage-monitor" / "settings.json"
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    out = dict(base)
+    for k, v in (override or {}).items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+def load_settings() -> dict:
+    raw: dict = {}
+    try:
+        p = settings_path()
+        if p.is_file():
+            loaded = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                raw = loaded
+    except (OSError, json.JSONDecodeError):
+        raw = {}
+    return _deep_merge(DEFAULT_SETTINGS, raw)
+
+
+def save_settings(patch: dict) -> dict:
+    merged = _deep_merge(load_settings(), patch if isinstance(patch, dict) else {})
+    p = settings_path()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+    return merged
+
+
+def _local_day_start() -> float:
+    now = datetime.now().astimezone()
+    return now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+
+def _as_int(value, fallback: int = 0) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _as_float(value, fallback: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def evaluate_alerts(payload: dict, settings: dict) -> list[dict]:
+    """按当前数据求值「此刻正在触发」的提醒。
+
+    这是状态型而不是事件型：同一条件只要还成立就一直返回，去重与弹窗交给前端/托盘做。
+    好处是刷新、重开页面、多端同时看都不会漏也不会重复堆叠。
+    """
+    cfg_all = settings.get("alerts") or {}
+    if not cfg_all.get("enabled", True):
+        return []
+
+    turns = payload.get("turns") or []
+    day_start = _local_day_start()
+    today = [t for t in turns if _as_float(t.get("ts")) >= day_start]
+    out: list[dict] = []
+
+    # 1) 今日轮次
+    cfg = cfg_all.get("todayTurns") or {}
+    if cfg.get("enabled"):
+        th = _as_int(cfg.get("threshold"))
+        if th > 0 and len(today) > th:
+            out.append({
+                "code": "todayTurns",
+                "level": "warn",
+                "title": "今日轮次偏多",
+                "detail": f"今日已 {len(today)} 轮，超过阈值 {th} 轮",
+                "value": len(today),
+                "threshold": th,
+            })
+
+    # 2) 单会话轮次（只看今天）
+    cfg = cfg_all.get("sessionTurns") or {}
+    if cfg.get("enabled"):
+        th = _as_int(cfg.get("threshold"))
+        if th > 0:
+            per: dict[str, int] = {}
+            for t in today:
+                sid = t.get("sessionId") or ""
+                per[sid] = per.get(sid, 0) + 1
+            ranked = sorted(per.items(), key=lambda kv: -kv[1])
+            if ranked and ranked[0][1] > th:
+                sid, n = ranked[0]
+                out.append({
+                    "code": "sessionTurns",
+                    "level": "warn",
+                    "title": "单个会话轮次偏多",
+                    "detail": f"会话 {sid[:8]} 今日已 {n} 轮，超过阈值 {th} 轮",
+                    "value": n,
+                    "threshold": th,
+                    "sessionId": sid,
+                })
+
+    # 3) 未归属/失败率（只看有明确状态的轮次）
+    cfg = cfg_all.get("errorRate") or {}
+    if cfg.get("enabled"):
+        th = _as_float(cfg.get("threshold"))
+        need = _as_int(cfg.get("minSamples"), 1)
+        known = [t for t in turns if t.get("status") and t.get("status") != "Unknown"]
+        if th > 0 and len(known) >= need:
+            bad = sum(1 for t in known if t.get("status") != "Success")
+            rate = bad * 100.0 / len(known)
+            if rate >= th:
+                out.append({
+                    "code": "errorRate",
+                    "level": "bad",
+                    "title": "响应失败率偏高",
+                    "detail": f"统计 {len(known)} 轮里有 {bad} 轮失败，失败率 {rate:.0f}%（阈值 {th:.0f}%）",
+                    "value": round(rate, 1),
+                    "threshold": th,
+                })
+
+    # 4) 平均耗时
+    cfg = cfg_all.get("avgCost") or {}
+    if cfg.get("enabled"):
+        th = _as_float(cfg.get("threshold"))
+        need = _as_int(cfg.get("minSamples"), 1)
+        durs = [_as_float(t.get("costTime")) for t in turns]
+        durs = [d for d in durs if d > 0]
+        if th > 0 and len(durs) >= need:
+            avg = sum(durs) / len(durs)
+            if avg >= th:
+                out.append({
+                    "code": "avgCost",
+                    "level": "warn",
+                    "title": "平均耗时偏高",
+                    "detail": f"平均 {avg / 1000:.1f}s（阈值 {th / 1000:.1f}s，样本 {len(durs)} 轮）",
+                    "value": round(avg),
+                    "threshold": th,
+                })
+
+    # 5) Auto 落到关注模型
+    cfg = cfg_all.get("autoSwitch") or {}
+    if cfg.get("enabled"):
+        want = normalize_model(cfg.get("model") or "")
+        if want:
+            ordered = sorted(turns, key=lambda t: _as_float(t.get("ts")))
+            hits = [t for t in ordered if t.get("mode") == "auto" and normalize_model(t.get("model")) == want]
+            if hits:
+                last = hits[-1]
+                out.append({
+                    "code": "autoSwitch",
+                    "level": "info",
+                    "title": "Auto 落到关注模型",
+                    "detail": f"最近一次 Auto 命中 {last.get('model')}（{str(last.get('time', ''))[11:19]}）",
+                    "value": last.get("model"),
+                })
+
+    return out
+
+
+def _files_stamp(files: list[dict]) -> str:
+    """日志文件的指纹：没变就说明没有新增对话，前端可以跳过重绘。"""
+    if not files:
+        return "0:0:0"
+    total = sum(_as_int(f.get("size")) for f in files)
+    latest = max(_as_float(f.get("mtime")) for f in files)
+    return f"{len(files)}:{total}:{int(latest)}"
+
+
+def live_payload(payload: dict, settings: dict) -> dict:
+    """给「实时面板 + 提醒」用的精简载荷：体积小、字段少、可以秒级轮询。"""
+    turns = payload.get("turns") or []
+    day_start = _local_day_start()
+    today = [t for t in turns if _as_float(t.get("ts")) >= day_start]
+    ordered = sorted(turns, key=lambda t: _as_float(t.get("ts")))
+
+    known = [t for t in today if t.get("status") and t.get("status") != "Unknown"]
+    ok = sum(1 for t in known if t.get("status") == "Success")
+    auto = sum(1 for t in today if t.get("mode") == "auto")
+    durs = [_as_float(t.get("costTime")) for t in today]
+    durs = [d for d in durs if d > 0]
+
+    last = ordered[-1] if ordered else None
+    cur_sid = ""
+    cur_turns = 0
+    if last and time.time() - _as_float(last.get("ts")) <= 600:
+        cur_sid = last.get("sessionId") or ""
+        cur_turns = sum(1 for t in today if t.get("sessionId") == cur_sid)
+
+    def slim(t: dict) -> dict:
+        return {
+            "ts": t.get("ts"),
+            "time": t.get("time"),
+            "sessionId": t.get("sessionId"),
+            "model": t.get("model"),
+            "mode": t.get("mode"),
+            "status": t.get("status"),
+            "costTime": t.get("costTime"),
+        }
+
+    alerts = evaluate_alerts(payload, settings)
+    return {
+        "generatedAt": payload.get("generatedAt"),
+        "stamp": _files_stamp(payload.get("files") or []),
+        "logRootExists": payload.get("logRootExists", False),
+        "total": len(turns),
+        "today": {
+            "turns": len(today),
+            "autoTurns": auto,
+            "known": len(known),
+            "success": ok,
+            "successRate": round(ok * 100.0 / len(known), 1) if known else None,
+            "avgCostTime": round(sum(durs) / len(durs)) if durs else None,
+        },
+        "current": {"sessionId": cur_sid, "turns": cur_turns},
+        "last": slim(last) if last else None,
+        "recent": [slim(t) for t in ordered[-24:]],
+        "alerts": alerts,
+        "settings": {
+            "pollSeconds": _as_float(settings.get("pollSeconds"), 2) or 2,
+            "dashboardSeconds": _as_float(settings.get("dashboardSeconds"), 30) or 30,
+            "alertsEnabled": bool((settings.get("alerts") or {}).get("enabled", True)),
+            "browserNotify": bool((settings.get("notify") or {}).get("browser", False)),
+            "trayNotify": bool((settings.get("notify") or {}).get("tray", True)),
+        },
+    }
+
+
 # ---------- 控制台用量明细 CSV 识别 ----------
 # 本地拿不到精确 token，只能从控制台「个人用量 → 用量明细」导出的 CSV 补。
 # 导出文件的表头不固定（也可能带 BOM / GBK），所以按表头关键字打分识别，不认文件名。
@@ -652,6 +907,13 @@ def print_doctor(log_root: Path) -> int:
     ok_assets = (WEB_DIR / "index.html").is_file()
     print(f"\n静态资源: {WEB_DIR}  {'OK' if ok_assets else '缺失（打包时漏了 --add-data web）'}")
 
+    if tray_available():
+        print("系统托盘: 可用（pystray + Pillow 已安装）")
+    else:
+        print("系统托盘: 不可用（可选，需要 pystray pillow；不装也能用页面内实时面板）")
+
+    print(f"提醒设置: {settings_path()}")
+
     download_dir = default_downloads_dir()
     print(f"\n下载目录: {download_dir}")
     if download_dir.is_dir():
@@ -674,11 +936,147 @@ def print_doctor(log_root: Path) -> int:
     return 0
 
 
+# ---------- 系统托盘（可选增强） ----------
+# 核心功能保持零依赖；托盘只有在装了 pystray + Pillow 时才启用，装不上就优雅降级成
+# 「只用页面」。托盘自身通过本地 HTTP 接口取数，和页面完全解耦。
+
+
+def tray_available() -> bool:
+    try:
+        import pystray  # noqa: F401
+        from PIL import Image  # noqa: F401
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
+def _tray_image(color: tuple, badge: bool = False):
+    from PIL import Image, ImageDraw
+
+    size = 64
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.ellipse((4, 4, size - 4, size - 4), fill=color)
+    d.ellipse((21, 21, size - 21, size - 21), fill=(11, 15, 22, 255))
+    if badge:
+        d.ellipse((40, 2, 62, 24), fill=(255, 107, 107, 255), outline=(11, 15, 22, 255), width=3)
+    return img
+
+
+def _http_json(url: str, method: str = "GET", payload: dict | None = None, timeout: float = 5.0) -> dict:
+    import urllib.request
+
+    data = None
+    headers: dict[str, str] = {}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def start_tray(port: int, stop_event: threading.Event) -> bool:
+    """在后台线程里跑托盘图标。返回是否成功装上。"""
+    if not tray_available():
+        return False
+    try:
+        import pystray
+    except Exception:  # noqa: BLE001
+        return False
+
+    url = f"http://127.0.0.1:{port}"
+    colors = {"ok": (51, 210, 161, 255), "warn": (255, 182, 72, 255), "bad": (255, 107, 107, 255)}
+    state: dict = {"text": "今日 0 轮", "color": colors["ok"], "badge": False, "alertsOn": True}
+
+    def open_dashboard(_icon=None, _item=None):
+        webbrowser.open(url + "/")
+
+    def toggle_alerts(icon, _item):
+        try:
+            state["alertsOn"] = not state["alertsOn"]
+            _http_json(url + "/api/settings", "POST", {"alerts": {"enabled": state["alertsOn"]}})
+            icon.update_menu()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def quit_app(icon, _item):
+        stop_event.set()
+        icon.stop()
+
+    menu = pystray.Menu(
+        pystray.MenuItem(lambda _i: state["text"], open_dashboard, default=True),
+        pystray.MenuItem("打开看板", open_dashboard),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem(
+            lambda _i: f"用量提醒：{'已开启' if state['alertsOn'] else '已关闭'}", toggle_alerts
+        ),
+        pystray.Menu.SEPARATOR,
+        pystray.MenuItem("退出监控", quit_app),
+    )
+    icon = pystray.Icon("trae-usage-monitor", _tray_image(colors["ok"]), "Trae 用量监控", menu)
+
+    def poll_loop():
+        last_sig: tuple | None = None
+        while not stop_event.is_set():
+            try:
+                live = _http_json(url + "/api/live")
+                alerts = live.get("alerts") or []
+                today = (live.get("today") or {}).get("turns", 0)
+                last = live.get("last") or {}
+                cfg = live.get("settings") or {}
+                state["alertsOn"] = bool(cfg.get("alertsEnabled", True))
+
+                if any(a.get("level") == "bad" for a in alerts):
+                    state["color"], state["badge"] = colors["bad"], True
+                elif alerts:
+                    state["color"], state["badge"] = colors["warn"], True
+                else:
+                    state["color"], state["badge"] = colors["ok"], False
+
+                text = f"今日 {today} 轮"
+                if last:
+                    text += f" · 最近 {last.get('model', '')}"
+                if alerts:
+                    text += f" · {len(alerts)} 条提醒"
+                state["text"] = text
+
+                icon.icon = _tray_image(state["color"], state["badge"])
+                icon.title = "Trae 用量监控 · " + text
+                try:
+                    icon.update_menu()
+                except Exception:  # noqa: BLE001
+                    pass
+
+                sig = tuple(sorted(str(a.get("code", "")) + str(a.get("sessionId") or "") for a in alerts))
+                if sig and sig != last_sig and cfg.get("trayNotify"):
+                    try:
+                        icon.notify(str(alerts[0].get("detail", "")), "Trae 用量提醒")
+                    except Exception:  # noqa: BLE001
+                        pass
+                last_sig = sig
+            except Exception:  # noqa: BLE001
+                state["text"] = "等待看板服务…"
+            stop_event.wait(5)
+
+    threading.Thread(target=poll_loop, name="tray-poll", daemon=True).start()
+
+    def runner():
+        try:
+            icon.run()
+        except Exception as exc:  # noqa: BLE001
+            sys.stderr.write(f"[tray] 托盘不可用，已降级为仅页面模式：{exc}\n")
+
+    threading.Thread(target=runner, name="tray", daemon=True).start()
+    return True
+
+
 # ---------- HTTP 服务 ----------
 
 _PAYLOAD_CACHE: dict[str, tuple[float, dict]] = {}
 _CACHE_LOCK = threading.Lock()
-_CACHE_TTL = 5.0
+# 实时面板是秒级轮询，缓存 TTL 跟着压到 2 秒；逐文件解析结果本身有缓存，没新日志时几乎零成本。
+_CACHE_TTL = 2.0
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -689,24 +1087,31 @@ class Handler(BaseHTTPRequestHandler):
         if not self.quiet:
             sys.stderr.write("[http] %s\n" % (fmt % args))
 
-    def _send(self, code: int, body: bytes, ctype: str):
+    def _send(self, code: int, body: bytes, ctype: str, gzip_ok: bool = False):
+        headers = [("Content-Type", ctype)]
+        if gzip_ok and len(body) > 512 and "gzip" in (self.headers.get("Accept-Encoding") or ""):
+            body = gzip.compress(body, 6)
+            headers.append(("Content-Encoding", "gzip"))
         self.send_response(code)
-        self.send_header("Content-Type", ctype)
+        for k, v in headers:
+            self.send_header(k, v)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_json(self, code: int, obj) -> None:
+        self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+
     def do_GET(self):
         route = urlparse(self.path)
         if route.path == "/api/data":
-            qs = parse_qs(route.query)
-            days = qs.get("days", ["0"])[0]
             try:
                 payload = self._data()
             except Exception as exc:  # noqa: BLE001
-                self._send(500, json.dumps({"error": str(exc)}).encode(), "application/json")
+                self._send_json(500, {"error": str(exc)})
                 return
+            days = parse_qs(route.query).get("days", ["0"])[0]
             if days.isdigit() and int(days) > 0:
                 cutoff = (datetime.now().astimezone() - timedelta(days=int(days))).timestamp()
                 payload = dict(payload)
@@ -715,7 +1120,23 @@ class Handler(BaseHTTPRequestHandler):
                     r for r in payload["unmatchedReports"] if r["ts"] >= cutoff
                 ]
                 payload["filteredDays"] = int(days)
-            self._send(200, json.dumps(payload, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+            self._send_json(200, payload)
+            return
+
+        if route.path == "/api/live":
+            try:
+                body = live_payload(self._data(), load_settings())
+            except Exception as exc:  # noqa: BLE001
+                self._send_json(500, {"error": str(exc)})
+                return
+            self._send_json(200, body)
+            return
+
+        if route.path == "/api/settings":
+            if parse_qs(route.query).get("defaults", ["0"])[0] == "1":
+                self._send_json(200, DEFAULT_SETTINGS)
+            else:
+                self._send_json(200, load_settings())
             return
 
         if route.path == "/api/csv/candidates":
@@ -723,29 +1144,22 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 cands = scan_csv_candidates(downloads)
             except Exception as exc:  # noqa: BLE001
-                self._send(500, json.dumps({"error": str(exc)}).encode(), "application/json")
+                self._send_json(500, {"error": str(exc)})
                 return
-            body = {
-                "downloads": str(downloads),
-                "exists": downloads.is_dir(),
-                "candidates": cands,
-            }
-            self._send(200, json.dumps(body, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+            self._send_json(200, {"downloads": str(downloads), "exists": downloads.is_dir(), "candidates": cands})
             return
 
         if route.path == "/api/csv/read":
-            qs = parse_qs(route.query)
-            path = safe_csv_path(qs.get("path", [""])[0])
+            path = safe_csv_path(parse_qs(route.query).get("path", [""])[0])
             if path is None:
-                self._send(400, json.dumps({"error": "路径不在下载目录内或不是 CSV"}).encode(), "application/json")
+                self._send_json(400, {"error": "路径不在下载目录内或不是 CSV"})
                 return
             try:
                 raw = path.read_bytes()
             except OSError as exc:
-                self._send(500, json.dumps({"error": str(exc)}).encode(), "application/json")
+                self._send_json(500, {"error": str(exc)})
                 return
-            body = {"name": path.name, "text": _decode_text(raw)}
-            self._send(200, json.dumps(body, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+            self._send_json(200, {"name": path.name, "text": _decode_text(raw)})
             return
 
         name = route.path.lstrip("/") or "index.html"
@@ -761,7 +1175,24 @@ class Handler(BaseHTTPRequestHandler):
             "app.js": "application/javascript; charset=utf-8",
             "app.css": "text/css; charset=utf-8",
         }[name]
-        self._send(200, path.read_bytes(), ctype)
+        self._send(200, path.read_bytes(), ctype, gzip_ok=True)
+
+    def do_POST(self):
+        route = urlparse(self.path)
+        if route.path != "/api/settings":
+            self._send(404, b"not found", "text/plain")
+            return
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        raw = self.rfile.read(length) if 0 < length <= 1_000_000 else b""
+        try:
+            patch = json.loads(raw.decode("utf-8")) if raw else {}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._send_json(400, {"error": "请求体不是合法 JSON"})
+            return
+        self._send_json(200, save_settings(patch if isinstance(patch, dict) else {}))
 
     def _data(self) -> dict:
         key = str(self.log_root)
@@ -775,7 +1206,7 @@ class Handler(BaseHTTPRequestHandler):
         return payload
 
 
-def serve(log_root: Path, port: int, open_browser: bool) -> None:
+def serve(log_root: Path, port: int, open_browser: bool, tray: bool = True) -> None:
     Handler.log_root = log_root
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{port}/"
@@ -783,12 +1214,23 @@ def serve(log_root: Path, port: int, open_browser: bool) -> None:
     print(f"日志目录: {log_root}")
     if not log_root.is_dir():
         print("!! 日志目录不存在，请确认 Trae CN 已运行过，或用 --log-root 指定")
+
+    stop_event = threading.Event()
+    if tray:
+        if tray_available():
+            if start_tray(port, stop_event):
+                print("系统托盘: 已启用（退出监控请用托盘菜单，或按 Ctrl+C）")
+        else:
+            print("系统托盘: 未启用（可选依赖缺失，安装后可用：pip install pystray pillow）")
+
     if open_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\n已停止")
+    finally:
+        stop_event.set()
         httpd.server_close()
 
 
@@ -800,6 +1242,7 @@ def main() -> int:
     ap.add_argument("--out", type=Path, help="导出解析结果到文件")
     ap.add_argument("--doctor", action="store_true", help="自检：检查日志格式与资源是否正常")
     ap.add_argument("--no-open", action="store_true", help="不自动打开浏览器")
+    ap.add_argument("--no-tray", action="store_true", help="不启用系统托盘")
     args = ap.parse_args()
 
     if args.doctor:
@@ -816,7 +1259,7 @@ def main() -> int:
             print(text)
         return 0
 
-    serve(args.log_root, args.port, not args.no_open)
+    serve(args.log_root, args.port, not args.no_open, tray=not args.no_tray)
     return 0
 
 

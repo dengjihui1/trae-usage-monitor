@@ -3,12 +3,18 @@ setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
 
-echo [1/2] Installing / upgrading PyInstaller ...
+echo [1/3] Installing / upgrading PyInstaller ...
 python -m pip install --upgrade pyinstaller
 if errorlevel 1 goto fail
 
-echo [2/2] Building single-file exe ...
-python -m PyInstaller --noconfirm --clean --onefile --name trae-usage-monitor --add-data "web;web" trae_usage_monitor.py
+echo [2/3] Installing optional tray deps (pystray, pillow) ...
+python -m pip install --upgrade pystray pillow
+if errorlevel 1 echo   WARN: optional tray deps failed; tray will be disabled in this build
+
+echo [3/3] Building single-file exe ...
+rem --exclude-module numpy/psutil: pulled in transitively by PIL's PyInstaller hook, unused here,
+rem and numpy alone would add ~15 MB to the single-file exe.
+python -m PyInstaller --noconfirm --clean --onefile --name trae-usage-monitor --add-data "web;web" --exclude-module numpy --exclude-module psutil trae_usage_monitor.py
 if errorlevel 1 goto fail
 
 echo.
