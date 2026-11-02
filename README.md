@@ -115,17 +115,18 @@ cd trae-usage-monitor
 python trae_usage_monitor.py
 ```
 
-Windows 用户也可以直接双击 `start.bat`。
+Windows 用户也可以直接双击 `start.bat`，macOS 用户可以双击 `start.command`。
 
 浏览器会自动打开 <http://127.0.0.1:8788/>。
 
-### 方式三：从源码构建 exe
+### 方式三：从源码构建可执行文件
 
 ```bash
 build.bat            # Windows
+./build.sh           # macOS / Linux
 ```
 
-会在 `dist\` 下生成单文件 `trae-usage-monitor.exe`。macOS / Linux 见下面的「打包分发」。
+会在 `dist\` 下生成单文件 `trae-usage-monitor.exe`（macOS / Linux 下是 `dist/trae-usage-monitor`）。
 
 ### 命令行参数
 
@@ -146,6 +147,8 @@ python trae_usage_monitor.py --log-root "D:\logs" # 手动指定日志根目录
 ```bash
 pip install pystray pillow
 ```
+
+> macOS 上 `pystray` 会自动带上所需的 `pyobjc-framework-Quartz`，无需额外安装。Linux 上的托盘走 GTK / AppIndicator，如果系统里没有对应的库，托盘会装不上并静默降级，页面功能照常。
 
 启用后任务栏会出现一个图标：
 
@@ -177,7 +180,7 @@ CreateObject("WScript.Shell").Run "pythonw trae_usage_monitor.py --no-open", 0, 
 
 **macOS / Linux**
 
-用 `--no-open` 后台启动即可：
+macOS 可以直接双击 `start.command`。想后台常驻就用 `--no-open`：
 
 ```bash
 nohup python3 trae_usage_monitor.py --no-open > /dev/null 2>&1 &
@@ -193,14 +196,19 @@ build.bat
 
 **macOS / Linux**
 
-注意 `--add-data` 的分隔符不同（Windows 用 `;`，macOS/Linux 用 `:`）：
-
 ```bash
-pip install pyinstaller
-pyinstaller --onefile --name trae-usage-monitor --add-data "web:web" trae_usage_monitor.py
+chmod +x build.sh   # 首次
+./build.sh
 ```
 
-产物在 `dist/` 下。拿到 exe / 可执行文件的人**不需要装 Python**，双击即用。
+脚本会自动装好 PyInstaller 和可选的托盘依赖，产物在 `dist/` 下（macOS / Linux 上是单个可执行文件 `dist/trae-usage-monitor`）。拿到文件的人**不需要装 Python**，双击即用。
+
+> **PyInstaller 不支持交叉编译**：Windows 上打不出 mac 的包，反之亦然。想要哪个平台的可执行文件，就得在哪个平台上跑一次构建脚本。
+> 等价的原始命令（如果你不想用脚本）：macOS / Linux 的 `--add-data` 分隔符是 `:`，Windows 是 `;`。
+>
+> ```bash
+> pyinstaller --onefile --name trae-usage-monitor --add-data "web:web" trae_usage_monitor.py
+> ```
 
 > 打包原理：`web/` 目录通过 `--add-data` 一起打进去，程序启动时从 PyInstaller 的解包目录（`sys._MEIPASS`）读取静态资源。如果你自己改了 `web/` 的路径，记得同步改 `--add-data`。
 
@@ -430,9 +438,10 @@ Trae 用量监控 · 自检
 ## 跨平台说明
 
 - **Windows**：完整支持，`start.bat` / `build.bat` 可直接用，系统托盘已实测可用。
-- **macOS / Linux**：核心功能可用（日志目录已按平台探测），但 `build.bat` 是 Windows 批处理，需按上面的「打包分发」手动执行 PyInstaller 命令。
-- **系统托盘**：在 Windows 上实测可用。macOS 上 `pystray` 要求跑在主线程，而本工具的主线程被 HTTP 服务占用，托盘可能装不上 —— 此时会**静默降级**为仅页面模式，不影响任何其它功能。
-- macOS / Linux 的日志路径按 VS Code 系惯例推断，**尚未在真机验证过**。如果你在 Mac 上跑通了（或跑不通），欢迎开 issue 反馈。
+- **macOS**：`start.command` 双击启动，`build.sh` 打包。**系统托盘已按 macOS 的要求（AppKit 必须在主线程跑事件循环）做了专门处理** —— 启动时会把 HTTP 服务放到后台线程，主线程交给托盘，因此托盘在 macOS 上是预期可用的。
+- **Linux**：`build.sh` 打包；托盘走 GTK / AppIndicator，同样按主线程要求处理，系统缺 GTK 依赖时静默降级为仅页面模式。
+- **诚实提示**：以上 macOS / Linux 的代码路径都**没有在真机验证过**（开发机是 Windows）。日志目录按 VS Code 系惯例推断（macOS `~/Library/Application Support/Trae CN/logs`）。如果你在 Mac / Linux 上跑通了（或跑不通），欢迎开 issue 反馈 —— 尤其是日志路径，那是最容易对不上的地方。
+- **托盘降级是常态而非例外**：任何平台上托盘装不上都不会影响页面功能，`--no-tray` 也可以主动关掉它。
 
 ---
 
@@ -444,7 +453,9 @@ web/index.html           看板结构
 web/app.css              样式
 web/app.js               聚合与渲染、实时面板、提醒设置、CSV 导入
 start.bat                一键启动（Windows）
-build.bat                打包单文件 exe（PyInstaller，含可选托盘依赖）
+start.command            一键启动（macOS，双击运行）
+build.bat                打包单文件 exe（Windows，含可选托盘依赖）
+build.sh                 打包单文件可执行文件（macOS / Linux）
 docs/                    README 截图
 README.md                中文说明（本文件）
 README.en.md             English readme
@@ -468,7 +479,7 @@ LICENSE                  MIT
 - **依赖日志格式** —— 属 Trae 内部实现，升级后可能变；用 `--doctor` 可快速判断。
 - **只统计本机** —— 日志在本地，换设备看不到。
 - **仅覆盖 Auto 归因** —— 不做额度查询，不做成本换算。
-- **托盘为可选增强** —— 需要 `pystray` + `Pillow`；macOS 上可能不可用，会自动降级。
+- **托盘为可选增强** —— 需要 `pystray` + `Pillow`（macOS 上会自动带上 pyobjc）；装不上会自动降级为仅页面模式。
 
 ---
 

@@ -976,8 +976,18 @@ def _http_json(url: str, method: str = "GET", payload: dict | None = None, timeo
         return json.loads(resp.read().decode("utf-8"))
 
 
-def start_tray(port: int, stop_event: threading.Event) -> bool:
-    """在后台线程里跑托盘图标。返回是否成功装上。"""
+def tray_needs_main_thread() -> bool:
+    """托盘是否必须在主线程运行。
+
+    macOS 的 pystray 走 AppKit，Linux 走 GTK / AppIndicator，两者都硬性要求主线程；
+    Windows 的消息循环在后台线程也能正常泵消息，因此保持原行为，
+    以保住主线程 serve_forever 轮询带来的 Ctrl+C 即时响应。
+    """
+    return sys.platform != "win32"
+
+
+def start_tray(port: int, stop_event: threading.Event, blocking: bool = False) -> bool:
+    """启动托盘图标。blocking=True 时在当前（主）线程跑事件循环。返回是否成功装上。"""
     if not tray_available():
         return False
     try:
@@ -1060,6 +1070,17 @@ def start_tray(port: int, stop_event: threading.Event) -> bool:
             stop_event.wait(5)
 
     threading.Thread(target=poll_loop, name="tray-poll", daemon=True).start()
+
+    if blocking:
+        # 主线程跑事件循环，直到托盘「退出监控」被点击或收到信号
+        try:
+            icon.run()
+        except Exception as exc:  # noqa: BLE001
+            sys.stderr.write(f"[tray] 托盘不可用，已降级为仅页面模式：{exc}\n")
+            stop_event.set()
+            return False
+        stop_event.set()
+        return True
 
     def runner():
         try:
@@ -1216,15 +1237,39 @@ def serve(log_root: Path, port: int, open_browser: bool, tray: bool = True) -> N
         print("!! 日志目录不存在，请确认 Trae CN 已运行过，或用 --log-root 指定")
 
     stop_event = threading.Event()
-    if tray:
-        if tray_available():
-            if start_tray(port, stop_event):
-                print("系统托盘: 已启用（退出监控请用托盘菜单，或按 Ctrl+C）")
-        else:
-            print("系统托盘: 未启用（可选依赖缺失，安装后可用：pip install pystray pillow）")
+    tray_ok = bool(tray) and tray_available()
 
     if open_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+
+    if tray and not tray_ok:
+        print("系统托盘: 未启用（可选依赖缺失，安装后可用：pip install pystray pillow）")
+
+    if tray_ok and tray_needs_main_thread():
+        # 托盘必须在主线程（macOS 的 AppKit / Linux 的 GTK 都硬性要求主线程），
+        # 所以把 HTTP 服务放到后台线程，主线程交给托盘事件循环。
+        def run_http() -> None:
+            try:
+                httpd.serve_forever()
+            except Exception:  # noqa: BLE001
+                pass
+
+        threading.Thread(target=run_http, name="http", daemon=True).start()
+        print("系统托盘: 已启用（退出监控请用托盘菜单，或按 Ctrl+C）")
+        try:
+            if not start_tray(port, stop_event, blocking=True):
+                stop_event.wait()  # 托盘没起来，退化为纯后台服务，等 Ctrl+C
+        except KeyboardInterrupt:
+            print("\n已停止")
+        finally:
+            stop_event.set()
+            httpd.shutdown()
+            httpd.server_close()
+        return
+
+    if tray_ok and start_tray(port, stop_event):
+        print("系统托盘: 已启用（退出监控请用托盘菜单，或按 Ctrl+C）")
+
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

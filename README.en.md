@@ -115,17 +115,18 @@ cd trae-usage-monitor
 python trae_usage_monitor.py
 ```
 
-On Windows you can also just double-click `start.bat`.
+On Windows you can also just double-click `start.bat`; on macOS, double-click `start.command`.
 
 The browser opens <http://127.0.0.1:8788/> automatically.
 
-### Option 3: build the exe from source
+### Option 3: build the binary from source
 
 ```bash
 build.bat            # Windows
+./build.sh           # macOS / Linux
 ```
 
-This produces a single-file `trae-usage-monitor.exe` under `dist\`. For macOS / Linux see "Packaging and distribution" below.
+This produces a single-file `dist\trae-usage-monitor.exe` on Windows (on macOS / Linux: `dist/trae-usage-monitor`).
 
 ### Command-line flags
 
@@ -146,6 +147,8 @@ The core has **zero third-party dependencies**. The system tray is optional: if 
 ```bash
 pip install pystray pillow
 ```
+
+> On macOS `pystray` pulls in the required `pyobjc-framework-Quartz` automatically. On Linux the tray uses GTK / AppIndicator; if those libraries are missing the tray simply fails to attach and degrades silently — the page keeps working.
 
 Once enabled, an icon appears in your taskbar:
 
@@ -177,7 +180,7 @@ CreateObject("WScript.Shell").Run "pythonw trae_usage_monitor.py --no-open", 0, 
 
 **macOS / Linux**
 
-Just start it in the background with `--no-open`:
+On macOS you can just double-click `start.command`. To keep it running in the background, use `--no-open`:
 
 ```bash
 nohup python3 trae_usage_monitor.py --no-open > /dev/null 2>&1 &
@@ -193,14 +196,19 @@ build.bat
 
 **macOS / Linux**
 
-Note the `--add-data` separator differs (Windows uses `;`, macOS/Linux use `:`):
-
 ```bash
-pip install pyinstaller
-pyinstaller --onefile --name trae-usage-monitor --add-data "web:web" trae_usage_monitor.py
+chmod +x build.sh   # first time only
+./build.sh
 ```
 
-Output lands in `dist/`. Whoever receives the binary **does not need Python installed**.
+The script installs PyInstaller and the optional tray deps for you; the output lands in `dist/` (on macOS / Linux: a single `dist/trae-usage-monitor` executable). Whoever receives the binary **does not need Python installed**.
+
+> **PyInstaller does not cross-compile**: you cannot build a macOS binary on Windows or vice versa. Build on the platform you want to ship for.
+> The equivalent raw command, if you prefer not to use the script (note the `--add-data` separator: `:` on macOS / Linux, `;` on Windows):
+>
+> ```bash
+> pyinstaller --onefile --name trae-usage-monitor --add-data "web:web" trae_usage_monitor.py
+> ```
 
 > How packaging works: the `web/` directory is bundled via `--add-data`, and at startup the program reads the static assets from PyInstaller's unpack directory (`sys._MEIPASS`). If you move `web/`, update `--add-data` to match.
 
@@ -430,9 +438,10 @@ No. Logs are local, and the tool only reads the local machine.
 ## Cross-platform notes
 
 - **Windows**: fully supported; `start.bat` / `build.bat` work as-is, and the system tray is verified working.
-- **macOS / Linux**: core functionality works (log directories are detected per platform), but `build.bat` is a Windows batch file — run the PyInstaller command from "Packaging and distribution" manually.
-- **System tray**: verified on Windows. On macOS, `pystray` requires the main thread, but this tool's main thread is taken by the HTTP server, so the tray may fail to install — in that case it **silently degrades** to page-only mode with no other impact.
-- The macOS / Linux log paths follow the VS Code family convention and have **not been verified on real hardware**. If you get it running on a Mac (or fail to), please open an issue.
+- **macOS**: launch with `start.command`, package with `build.sh`. **The tray is handled the way macOS requires** — AppKit demands that the event loop run on the main thread, so at startup the HTTP server is moved to a background thread and the main thread is handed to the tray. The tray is therefore expected to work on macOS.
+- **Linux**: package with `build.sh`; the tray uses GTK / AppIndicator and is similarly handled for the main-thread requirement. If GTK is missing, it degrades silently to page-only mode.
+- **Honest caveat**: none of the macOS / Linux code paths have been **verified on real hardware** (the dev machine is Windows). Log directories follow the VS Code convention (macOS `~/Library/Application Support/Trae CN/logs`). If you get it running on a Mac / Linux box — or fail to — please open an issue; the log path is the most likely thing to be off.
+- **Tray degradation is normal, not exceptional**: on any platform, if the tray cannot attach, the page keeps working, and `--no-tray` turns it off explicitly.
 
 ---
 
@@ -444,7 +453,9 @@ web/index.html          dashboard markup
 web/app.css             styles
 web/app.js              aggregation, rendering, live panel, alert settings, CSV import
 start.bat               one-click launch (Windows)
-build.bat               build a single-file exe (PyInstaller, includes the optional tray deps)
+start.command           one-click launch (macOS, double-click)
+build.bat               build a single-file exe (Windows, includes the optional tray deps)
+build.sh                build a single-file binary (macOS / Linux)
 docs/                   README screenshots
 README.md               Chinese readme
 README.en.md            this file
@@ -468,7 +479,7 @@ At runtime a settings file is created in your home directory (safe to delete):
 - **Depends on the log format** — it is a Trae internal implementation and may change; `--doctor` diagnoses it quickly.
 - **This machine only** — logs are local, so another device is invisible.
 - **Auto attribution only** — no quota lookup, no cost conversion.
-- **Tray is optional** — needs `pystray` + `Pillow`; may be unavailable on macOS, where it degrades automatically.
+- **Tray is optional** — needs `pystray` + `Pillow` (macOS pulls in pyobjc automatically); if it fails to attach it degrades to page-only mode.
 
 ---
 

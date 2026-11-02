@@ -1,0 +1,10 @@
+# Shell 脚本必须用 LF，否则在 macOS / Linux 上会因 shebang 里混入 \r 而无法执行
+*.sh        text eol=lf
+*.command   text eol=lf
+
+# Windows 批处理必须用 CRLF
+*.bat       text eol=crlf
+
+# 二进制资源不做换行符转换
+*.png       binary
+*.exe       binary
