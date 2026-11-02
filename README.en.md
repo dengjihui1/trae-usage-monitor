@@ -101,9 +101,14 @@ Three ways. Pick whichever fits.
 
 1. **[Download `trae-usage-monitor.exe`](https://github.com/dengjihui1/trae-usage-monitor/releases/latest/download/trae-usage-monitor.exe)** (or pick a version from this repo's Releases page)
 2. Double-click it
-3. The dashboard opens in your browser
+3. The dashboard opens in your browser. The exe itself **sits silently in the system tray** — no console window flashes up.
 
 > On first run Windows may show a blue "Windows protected your PC" prompt — the exe is not code-signed (most personal projects are not). Click "**More info → Run anyway**".
+
+**To quit**: right-click the tray icon → "退出监控" (Quit).
+(If the tray is not active — it cannot attach on this machine, or you passed `--no-tray` — the exe attaches a console window instead, so you can `Ctrl+C` out or just close that window; it will never leave you with an unkillable silent process.)
+
+**Double-clicking twice will not crash it**: on the second launch the port is already taken, so it pops up a dialog telling you an instance is already running instead of dying with a traceback.
 
 ### Option 2: run with Python (recommended)
 

@@ -15,10 +15,14 @@ echo "[2/3] Installing optional tray deps (pystray, pillow) ..."
   echo "  WARN: optional tray deps failed; tray will be disabled in this build"
 
 echo "[3/3] Building single-file binary ..."
+# --icon: 同一个 web/favicon.ico 既作浏览器 favicon 也作可执行文件图标，避免两份图标漂移。
+# 这里不加 --noconsole：macOS / Linux 上保留控制台输出更方便排查，
+# 而且 windowed 行为在本项目尚未真机验证过，不贸然改。
 # --exclude-module numpy/psutil: 被 PIL 的 PyInstaller hook 连带拉进来，这里用不到，
 # 光 numpy 一个就会给单文件增加 ~15MB。
 "$PY" -m PyInstaller --noconfirm --clean --onefile \
   --name trae-usage-monitor \
+  --icon "web/favicon.ico" \
   --add-data "web:web" \
   --exclude-module numpy --exclude-module psutil \
   trae_usage_monitor.py

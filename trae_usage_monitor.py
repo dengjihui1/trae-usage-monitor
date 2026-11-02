@@ -56,6 +56,89 @@ EV_REPORT = "reportFrontResponse, status: "
 _APP_DIRS = ("Trae CN", "Trae", "Trae Solo")
 
 
+def _stderr(msg: str) -> None:
+    """安全写 stderr。
+
+    PyInstaller 以 --noconsole 打包时 sys.stderr 可能是 None，直接写会抛异常；
+    而 BaseHTTPRequestHandler.log_message 在发响应之前就会被调用，
+    一旦这里抛异常整个请求都会废掉，看板直接打不开。
+    """
+    try:
+        if sys.stderr is not None:
+            sys.stderr.write(msg)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _ensure_console() -> bool:
+    """确保 stdout/stderr 可用；windowed 打包下没有控制台就现补一个。
+
+    两处需要它：命令行模式（--doctor / --json / --out）否则会静默无输出；
+    以及「托盘装不上」的降级路径，否则会变成一个既没托盘也没控制台、
+    只能去任务管理器强杀的进程。
+    """
+    if sys.stdout is not None and sys.stderr is not None:
+        return True
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        # 正常情况没有控制台，这里现补一个；已经有控制台的少见情况会返回 0，
+        # 那就直接复用，靠下面的 CONOUT$ 能否打开来判定成败。
+        kernel32.AllocConsole()
+        # 新分配的控制台默认用系统 ANSI 代码页（简体中文是 936），而下面我们按
+        # UTF-8 写，不切成 65001 的话中文会满屏乱码。
+        kernel32.SetConsoleOutputCP(65001)
+        kernel32.SetConsoleCP(65001)
+        sys.stdout = open("CONOUT$", "w", encoding="utf-8", buffering=1)
+        sys.stderr = open("CONOUT$", "w", encoding="utf-8", buffering=1)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _message_box(title: str, text: str, error: bool = False) -> None:
+    """弹一个原生对话框 —— windowed 打包下没有控制台可以打印。"""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        flags = 0x10 if error else 0x40  # MB_ICONERROR / MB_ICONINFORMATION
+        ctypes.windll.user32.MessageBoxW(None, text, title, flags)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _report_fatal(message: str, error: bool = False) -> None:
+    """启动期致命错误的反馈 —— 进程马上就要退，所以提示必须留得住。
+
+    windowed 打包下没有控制台：这时候现补一个也没用，控制台会跟着进程一起消失，
+    用户只会看到黑框一闪，所以必须弹窗。本来就带控制台的情况（从命令行跑）直接打印。
+    """
+    if sys.stdout is not None and sys.stderr is not None:
+        _stderr(message + "\n")
+        return
+    _message_box("Trae 用量监控", message, error=error)
+
+
+def _port_in_use(port: int) -> bool:
+    """端口上是否已经有东西在监听。
+
+    必须自己探一下，不能指望 bind 报错：http.server 默认开着 SO_REUSEADDR，
+    而 Windows 上的这个选项会放行第二个进程绑到同一端口并**抢走**流量 ——
+    表现为两个实例都活着、只有后启动的那个在服务，用户会莫名其妙看到两个托盘图标。
+    探测一把就能在抢端口之前干净地拒掉。
+    """
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.5)
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+
+
 def _config_base() -> Path:
     """各平台存放应用数据的根目录（VS Code 系惯例）。"""
     home = Path.home()
@@ -1076,7 +1159,7 @@ def start_tray(port: int, stop_event: threading.Event, blocking: bool = False) -
         try:
             icon.run()
         except Exception as exc:  # noqa: BLE001
-            sys.stderr.write(f"[tray] 托盘不可用，已降级为仅页面模式：{exc}\n")
+            _stderr(f"[tray] 托盘不可用，已降级为仅页面模式：{exc}\n")
             stop_event.set()
             return False
         stop_event.set()
@@ -1086,7 +1169,7 @@ def start_tray(port: int, stop_event: threading.Event, blocking: bool = False) -
         try:
             icon.run()
         except Exception as exc:  # noqa: BLE001
-            sys.stderr.write(f"[tray] 托盘不可用，已降级为仅页面模式：{exc}\n")
+            _stderr(f"[tray] 托盘不可用，已降级为仅页面模式：{exc}\n")
 
     threading.Thread(target=runner, name="tray", daemon=True).start()
     return True
@@ -1106,7 +1189,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):  # noqa: A002
         if not self.quiet:
-            sys.stderr.write("[http] %s\n" % (fmt % args))
+            _stderr("[http] %s\n" % (fmt % args))
 
     def _send(self, code: int, body: bytes, ctype: str, gzip_ok: bool = False):
         headers = [("Content-Type", ctype)]
@@ -1184,19 +1267,21 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         name = route.path.lstrip("/") or "index.html"
-        if name not in ("index.html", "app.js", "app.css"):
+        ctype_map = {
+            "index.html": "text/html; charset=utf-8",
+            "app.js": "application/javascript; charset=utf-8",
+            "app.css": "text/css; charset=utf-8",
+            "favicon.ico": "image/x-icon",
+        }
+        if name not in ctype_map:
             self._send(404, b"not found", "text/plain")
             return
         path = WEB_DIR / name
         if not path.is_file():
             self._send(404, b"missing web asset", "text/plain")
             return
-        ctype = {
-            "index.html": "text/html; charset=utf-8",
-            "app.js": "application/javascript; charset=utf-8",
-            "app.css": "text/css; charset=utf-8",
-        }[name]
-        self._send(200, path.read_bytes(), ctype, gzip_ok=True)
+        # ico 已是压缩格式，再 gzip 只是白费 CPU
+        self._send(200, path.read_bytes(), ctype_map[name], gzip_ok=name != "favicon.ico")
 
     def do_POST(self):
         route = urlparse(self.path)
@@ -1242,8 +1327,15 @@ def serve(log_root: Path, port: int, open_browser: bool, tray: bool = True) -> N
     if open_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
 
-    if tray and not tray_ok:
-        print("系统托盘: 未启用（可选依赖缺失，安装后可用：pip install pystray pillow）")
+    if not tray_ok:
+        # 托盘没起来（--no-tray，或可选依赖缺失）。静默打包下这时就只剩一个没有任何
+        # 交互入口的后台进程了，所以补一个控制台：能看输出，也能 Ctrl+C / 关窗口退出。
+        _ensure_console()
+        if tray:
+            print("系统托盘: 未启用（可选依赖缺失，安装后可用：pip install pystray pillow）")
+        else:
+            print("系统托盘: 已按 --no-tray 关闭")
+        print("已切换为控制台模式，按 Ctrl+C 退出。")
 
     if tray_ok and tray_needs_main_thread():
         # 托盘必须在主线程（macOS 的 AppKit / Linux 的 GTK 都硬性要求主线程），
@@ -1291,9 +1383,11 @@ def main() -> int:
     args = ap.parse_args()
 
     if args.doctor:
+        _ensure_console()
         return print_doctor(args.log_root)
 
     if args.json or args.out:
+        _ensure_console()
         payload = snapshot_payload(args.log_root)
         text = json.dumps(payload, ensure_ascii=False, indent=2)
         if args.out:
@@ -1304,7 +1398,26 @@ def main() -> int:
             print(text)
         return 0
 
-    serve(args.log_root, args.port, not args.no_open, tray=not args.no_tray)
+    if _port_in_use(args.port):
+        _report_fatal(
+            f"端口 {args.port} 已被占用。\n\n"
+            f"如果本程序已经在运行（看右下角托盘图标），直接用那个就行；\n"
+            f"否则请先关掉占用该端口的程序，或用 --port 换一个端口重试。",
+            error=True,
+        )
+        return 1
+
+    try:
+        serve(args.log_root, args.port, not args.no_open, tray=not args.no_tray)
+    except OSError as exc:
+        # 兜底：探测和 bind 之间仍有极小的竞争窗口，或者端口被别的东西占着。
+        _report_fatal(
+            f"启动失败：{exc}\n\n"
+            f"端口 {args.port} 可能已被占用。\n"
+            f"请先关掉已运行的实例，或用 --port 换一个端口重试。",
+            error=True,
+        )
+        return 1
     return 0
 
 
