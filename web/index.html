@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Trae 用量监控</title>
+<link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="dot"></span>
+    <h1>Trae 用量监控</h1>
+    <span class="sub">Auto 模型归因 · 每模型调用量</span>
+  </div>
+  <div class="controls">
+    <select id="days">
+      <option value="7">最近 7 天</option>
+      <option value="30" selected>最近 30 天</option>
+      <option value="0">全部历史</option>
+    </select>
+    <label class="chk"><input type="checkbox" id="autoRefresh" checked /> 自动刷新</label>
+    <button id="refresh">刷新</button>
+  </div>
+</header>
+
+<main>
+  <section class="meta" id="meta"></section>
+
+  <section class="kpis" id="kpis"></section>
+
+  <section class="card trace-card">
+    <div class="card-head">
+      <h2>Auto 决策轨迹</h2>
+      <span class="hint">每一轮 Auto 最终落到了哪个模型，按会话时间顺序排列；颜色变化即代表 Auto 换模型</span>
+      <span class="spacer"></span>
+      <label class="chk"><input type="checkbox" id="traceManual" /> 显示 manual 轮次</label>
+    </div>
+    <div id="trace" class="trace"></div>
+  </section>
+
+  <div class="grid2">
+    <section class="card">
+      <div class="card-head"><h2>模型用量分布</h2><span class="hint">按对话轮次</span></div>
+      <div id="modelBars" class="barlist"></div>
+    </section>
+
+    <section class="card">
+      <div class="card-head"><h2>模式占比</h2><span class="hint">auto 自动选模型 / manual 手选</span></div>
+      <div class="donut-wrap">
+        <div id="donut" class="donut"></div>
+        <div id="legend" class="legend"></div>
+      </div>
+      <div class="card-head mt"><h2>状态</h2></div>
+      <div id="statusBars" class="barlist small"></div>
+    </section>
+  </div>
+
+  <section class="card">
+    <div class="card-head"><h2>按天趋势</h2><span class="hint">每天各模型调用轮次</span></div>
+    <div id="daily" class="daily"></div>
+    <div id="dailyLegend" class="legend inline"></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>会话</h2><span class="hint">点击一行筛选下方明细</span>
+    </div>
+    <div class="table-wrap">
+      <table id="sessionTable">
+        <thead><tr><th>会话</th><th>Agent</th><th>轮次</th><th>模型构成</th><th>Auto 占比</th><th>最后活动</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>明细</h2>
+      <span class="hint" id="filterHint">全部轮次</span>
+      <span class="spacer"></span>
+      <select id="modelFilter"><option value="">全部模型</option></select>
+      <select id="modeFilter">
+        <option value="">全部模式</option>
+        <option value="auto">auto</option>
+        <option value="manual">manual</option>
+        <option value="unknown">unknown</option>
+      </select>
+      <button id="clearFilter" class="ghost">清除会话筛选</button>
+    </div>
+    <div class="table-wrap tall">
+      <table id="turnTable">
+        <thead><tr><th>时间</th><th>会话</th><th>模型</th><th>模式</th><th>状态</th><th>耗时</th><th>Agent</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Token 用量补充</h2>
+      <span class="hint">本地日志不含 token 值，可导入控制台「用量明细」CSV 按会话/模型对齐</span>
+    </div>
+    <div class="import">
+      <button id="csvAuto">自动查找用量明细</button>
+      <input type="file" id="csvFile" accept=".csv,text/csv" />
+      <button id="clearCsv" class="ghost">清除导入</button>
+      <span id="csvInfo" class="hint"></span>
+    </div>
+    <div id="csvCandidates" class="candidates"></div>
+    <div id="tokenTable" class="table-wrap"></div>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>
