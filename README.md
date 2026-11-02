@@ -6,6 +6,8 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-0078d4.svg)](#跨平台说明)
 [![Dependencies](https://img.shields.io/badge/Dependencies-zero-brightgreen.svg)](#隐私与安全)
+[![Release](https://img.shields.io/github/v/release/dengjihui1/trae-usage-monitor?color=blue)](https://github.com/dengjihui1/trae-usage-monitor/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/dengjihui1/trae-usage-monitor/total)](https://github.com/dengjihui1/trae-usage-monitor/releases)
 
 解析 Trae 客户端的本地日志，**还原每一轮对话实际落到的模型**，统计每个模型的调用量，并给出一个本地可视化看板。
 
@@ -76,7 +78,7 @@ Trae 的 Auto 模式会自动在你可用的模型之间路由，但你看到的
 
 ### 方式一：直接用 exe（不装 Python 的人选这个）
 
-1. 到本仓库的 **Releases** 页面下载 `trae-usage-monitor.exe`
+1. **[点此直接下载 `trae-usage-monitor.exe`](https://github.com/dengjihui1/trae-usage-monitor/releases/latest/download/trae-usage-monitor.exe)**（或到本仓库的 Releases 页面挑选版本）
 2. 双击运行
 3. 浏览器会自动打开看板
 

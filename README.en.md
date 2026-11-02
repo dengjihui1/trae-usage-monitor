@@ -6,6 +6,8 @@ English | [中文](README.md)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-0078d4.svg)](#cross-platform-notes)
 [![Dependencies](https://img.shields.io/badge/Dependencies-zero-brightgreen.svg)](#privacy-and-security)
+[![Release](https://img.shields.io/github/v/release/dengjihui1/trae-usage-monitor?color=blue)](https://github.com/dengjihui1/trae-usage-monitor/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/dengjihui1/trae-usage-monitor/total)](https://github.com/dengjihui1/trae-usage-monitor/releases)
 
 Parses Trae's local logs to **recover the model each conversation turn actually landed on**, aggregates call volume per model, and renders it as a local dashboard.
 
@@ -76,7 +78,7 @@ Three ways. Pick whichever fits.
 
 ### Option 1: use the exe (no Python needed)
 
-1. Download `trae-usage-monitor.exe` from this repo's **Releases** page
+1. **[Download `trae-usage-monitor.exe`](https://github.com/dengjihui1/trae-usage-monitor/releases/latest/download/trae-usage-monitor.exe)** (or pick a version from this repo's Releases page)
 2. Double-click it
 3. The dashboard opens in your browser
 
